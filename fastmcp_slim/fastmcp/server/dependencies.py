@@ -771,6 +771,17 @@ def without_injected_parameters(
     fn_is_async = is_coroutine_function(fn)
 
     async def wrapper(**user_kwargs: Any) -> Any:
+        if inspect.isasyncgenfunction(fn):
+            # Async generator: keep the dependency context open while the
+            # generator is being consumed. Without this, the context closes
+            # before iteration starts, so the generator sees closed resources.
+            async def gen_wrapper():
+                async with resolve_dependencies(fn, user_kwargs) as resolved_kwargs:
+                    async for item in fn(**resolved_kwargs):
+                        yield item
+
+            return gen_wrapper()
+
         async with resolve_dependencies(fn, user_kwargs) as resolved_kwargs:
             if fn_is_async:
                 return await fn(**resolved_kwargs)

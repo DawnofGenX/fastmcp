@@ -1,5 +1,6 @@
 """Tests for Docket-style dependency injection in FastMCP."""
 
+import io
 from contextlib import asynccontextmanager, contextmanager
 
 import pytest
@@ -1193,6 +1194,33 @@ class TestSharedDependencies:
                 in result.messages[0].content.text
             )
             assert call_count == 1
+
+    async def test_async_generator_tool_with_context_manager_dependency(self, mcp: FastMCP):
+        """Async-generator tools must iterate while context-manager deps are open.
+
+        Regression test for #5399: the dependency's __aexit__ was called before
+        the generator finished iterating, so the generator saw a closed resource.
+        """
+        from collections.abc import AsyncIterator
+
+        @asynccontextmanager
+        async def open_stream():
+            stream = io.StringIO("payload")
+            try:
+                yield stream
+            finally:
+                stream.close()
+
+        @mcp.tool
+        async def read_stream(
+            stream: io.StringIO = Depends(open_stream),
+        ) -> AsyncIterator[str]:
+            yield stream.read()
+
+        async with Client(mcp) as client:
+            result = await client.call_tool("read_stream", {})
+            assert not result.is_error
+            assert result.content[0].text == '["payload"]'
 
     async def test_shared_resolves_on_task_capable_server(self):
         """Shared() dependencies resolve on a normal request even when the server

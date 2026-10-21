@@ -13,7 +13,11 @@ from anyio.to_thread import run_sync
 from mcp.shared.path_security import PathEscapeError, safe_join
 from pydantic import AnyUrl
 
-from fastmcp.resources.base import Resource, ResourceResult
+from fastmcp.resources.base import (
+    Resource,
+    ResourceResult,
+    convert_raw_to_resource_result,
+)
 from fastmcp.resources.template import ResourceTemplate
 from fastmcp.server.providers.base import Provider
 from fastmcp.server.providers.skills._common import (
@@ -83,6 +87,12 @@ class SkillFileTemplate(ResourceTemplate):
 
     skill_info: SkillInfo
 
+    @staticmethod
+    def _guess_mime_type(file_path: str) -> str:
+        """Guess a skill file's MIME type, matching the resources path's fallback."""
+        mime_type, _ = mimetypes.guess_type(file_path)
+        return mime_type or "application/octet-stream"
+
     async def read(self, arguments: dict[str, Any]) -> str | bytes | ResourceResult:
         """Read a file from the skill directory."""
         file_path = arguments.get("path", "")
@@ -103,8 +113,8 @@ class SkillFileTemplate(ResourceTemplate):
             raise ValueError(f"Not a file: {file_path}")
 
         # Determine if binary or text based on mime type
-        mime_type, _ = mimetypes.guess_type(str(full_path))
-        if mime_type and mime_type.startswith("text/"):
+        mime_type = self._guess_mime_type(str(full_path))
+        if mime_type.startswith("text/"):
             return full_path.read_text(encoding="utf-8")
         else:
             return full_path.read_bytes()
@@ -117,7 +127,14 @@ class SkillFileTemplate(ResourceTemplate):
         """Server entry point - read file directly without creating ephemeral resource."""
         # Call read() directly and convert to ResourceResult
         result = await self.read(arguments=params)
-        return self.convert_result(result)
+        # `read()` guesses this same type to decide text vs blob; forwarding it
+        # keeps the read's content type in step with what the resources path
+        # reports, instead of the template's octet-stream default (#5852).
+        return convert_raw_to_resource_result(
+            result,
+            mime_type=self._guess_mime_type(params.get("path", "")),
+            meta=self.meta,
+        )
 
     async def create_resource(self, uri: str, params: dict[str, Any]) -> Resource:
         """Create a resource for the given URI and parameters.

@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
-from mcp_types import TextResourceContents
+from mcp_types import BlobResourceContents, TextResourceContents
 from pydantic import AnyUrl
 
 from fastmcp import Client, FastMCP
@@ -392,6 +392,74 @@ This is my skill content.
         async with Client(mcp) as client:
             result = await client.read_resource(AnyUrl("skill://my-skill/reference.md"))
             assert "# Reference" in result[0].text
+
+    @pytest.fixture
+    def typed_skill_dir(self, tmp_path: Path) -> Path:
+        """A skill whose supporting files cover text, JSON, and binary types."""
+        skill_dir = tmp_path / "typed-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# Typed\n")
+        (skill_dir / "ref.md").write_text("# Reference\n")
+        (skill_dir / "data.json").write_text('{"answer": 42}\n')
+        (skill_dir / "blob.bin").write_bytes(bytes(range(256)))
+        return skill_dir
+
+    @pytest.mark.parametrize(
+        ("file_name", "expected_mime", "expected_type"),
+        [
+            ("ref.md", "text/markdown", TextResourceContents),
+            ("data.json", "application/json", BlobResourceContents),
+            ("blob.bin", "application/octet-stream", BlobResourceContents),
+        ],
+    )
+    async def test_template_read_preserves_supporting_file_mime_type(
+        self,
+        typed_skill_dir: Path,
+        file_name: str,
+        expected_mime: str,
+        expected_type: type,
+    ):
+        """The default template mode must report each file's real MIME type (#5852).
+
+        The template guesses the type to decide text vs blob, so the read has to
+        serve that same guess rather than the template's octet-stream default.
+        """
+        mcp = FastMCP("Test")
+        mcp.add_provider(SkillProvider(skill_path=typed_skill_dir))
+
+        async with Client(mcp) as client:
+            result = await client.read_resource(f"skill://typed-skill/{file_name}")
+
+        contents = result[0]
+        assert isinstance(contents, expected_type), (
+            f"{file_name} should still be served as {expected_type.__name__}; "
+            f"text/blob classification must not change, got "
+            f"{type(contents).__name__}"
+        )
+        assert contents.mime_type == expected_mime, (
+            f"{file_name} served as {contents.mime_type!r} under the default "
+            f"supporting_files='template' mode, expected {expected_mime!r}"
+        )
+
+    @pytest.mark.parametrize("file_name", ["ref.md", "data.json", "blob.bin"])
+    async def test_template_and_resource_modes_report_same_mime_type(
+        self, typed_skill_dir: Path, file_name: str
+    ):
+        """Both supporting_files modes must report the same type for one file."""
+        observed: dict[str, str] = {}
+        for mode in ("template", "resources"):
+            mcp = FastMCP("Test")
+            mcp.add_provider(
+                SkillProvider(skill_path=typed_skill_dir, supporting_files=mode)
+            )
+            async with Client(mcp) as client:
+                result = await client.read_resource(f"skill://typed-skill/{file_name}")
+            observed[mode] = result[0].mime_type
+
+        assert observed["template"] == observed["resources"], (
+            f"{file_name}: template mode reports {observed['template']!r} but "
+            f"resources mode reports {observed['resources']!r}"
+        )
 
     async def test_read_supporting_file_with_space_in_name(self, tmp_path: Path):
         """Percent-encoded resource URIs for supporting files must round-trip (#4545)."""

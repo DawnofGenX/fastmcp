@@ -300,6 +300,29 @@ This is my skill content.
         assert len(templates) == 1
         assert templates[0].name == "my-skill_files"
 
+    async def test_listed_template_does_not_claim_a_single_mime_type(
+        self, typed_skill_dir: Path
+    ):
+        """The template serves heterogeneous files, so it must not advertise one.
+
+        `resources/read` returns per-file types, and the ResourceTemplate
+        contract requires the listing to agree with the read (#5852 review).
+        """
+        mcp = FastMCP("Test")
+        mcp.add_provider(SkillProvider(skill_path=typed_skill_dir))
+
+        async with Client(mcp) as client:
+            templates = await client.list_resource_templates()
+
+        skill_templates = [
+            t for t in templates if "skill://typed-skill" in t.uri_template
+        ]
+        assert skill_templates, templates
+        assert skill_templates[0].mime_type is None, (
+            "the heterogeneous skill template must not advertise a single MIME "
+            f"type, got {skill_templates[0].mime_type!r}"
+        )
+
     async def test_list_templates_resources_mode(self, single_skill_dir: Path):
         """In resources mode, no templates are exposed."""
         provider = SkillProvider(

@@ -11,6 +11,7 @@ from urllib.parse import quote, unquote
 
 from anyio.to_thread import run_sync
 from mcp.shared.path_security import PathEscapeError, safe_join
+from mcp_types import ResourceTemplate as SDKResourceTemplate
 from pydantic import AnyUrl
 
 from fastmcp.resources.base import (
@@ -86,6 +87,17 @@ class SkillFileTemplate(ResourceTemplate):
     """A template for accessing files within a skill."""
 
     skill_info: SkillInfo
+
+    def to_mcp_template(self, **overrides: Any) -> SDKResourceTemplate:
+        """Advertise no MIME type: this template serves heterogeneous files.
+
+        `resources/read` returns the real per-file type (markdown, JSON,
+        octet-stream for binaries), so a single listed MIME would contradict
+        it; the `ResourceTemplate` contract requires the listing and the read
+        to agree.
+        """
+        overrides.setdefault("mimeType", None)
+        return super().to_mcp_template(**overrides)
 
     @staticmethod
     def _guess_mime_type(file_path: str) -> str:

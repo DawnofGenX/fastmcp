@@ -105,6 +105,38 @@ class SkillFileTemplate(ResourceTemplate):
         mime_type, _ = mimetypes.guess_type(file_path)
         return mime_type or "application/octet-stream"
 
+    def _resolve_skill_file(self, file_path: str) -> tuple[Path, str]:
+        """Resolve a skill-relative path and guess the MIME type of the result.
+
+        ``resolve_within`` resolves symlinks, so the guessed type has to come
+        from the resolved path: guessing from the raw template parameter can
+        disagree with the file actually served and label the payload wrongly
+        (#5852). Both read paths use this helper so the text-vs-blob decision
+        and the advertised content type cannot drift apart.
+        """
+        try:
+            full_path = resolve_within(self.skill_info.path, file_path)
+        except PathEscapeError as e:
+            raise ValueError(f"Invalid path: {e}") from e
+        return full_path, self._guess_mime_type(str(full_path))
+
+    @staticmethod
+    def _read_file_contents(
+        full_path: Path, mime_type: str, file_path: str
+    ) -> str | bytes:
+        """Return a resolved skill file as text or bytes, classified by its MIME type."""
+        if not full_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        if not full_path.is_file():
+            raise ValueError(f"Not a file: {file_path}")
+
+        # Determine if binary or text based on mime type
+        if mime_type.startswith("text/"):
+            return full_path.read_text(encoding="utf-8")
+        else:
+            return full_path.read_bytes()
+
     async def read(self, arguments: dict[str, Any]) -> str | bytes | ResourceResult:
         """Read a file from the skill directory."""
         file_path = arguments.get("path", "")
@@ -113,23 +145,8 @@ class SkillFileTemplate(ResourceTemplate):
 
         # Security: reject traversal, absolute-path injection, null bytes, and
         # symlink escapes before touching the filesystem.
-        try:
-            full_path = resolve_within(self.skill_info.path, file_path)
-        except PathEscapeError as e:
-            raise ValueError(f"Invalid path: {e}") from e
-
-        if not full_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-
-        if not full_path.is_file():
-            raise ValueError(f"Not a file: {file_path}")
-
-        # Determine if binary or text based on mime type
-        mime_type = self._guess_mime_type(str(full_path))
-        if mime_type.startswith("text/"):
-            return full_path.read_text(encoding="utf-8")
-        else:
-            return full_path.read_bytes()
+        full_path, mime_type = self._resolve_skill_file(file_path)
+        return self._read_file_contents(full_path, mime_type, file_path)
 
     async def _read(
         self,
@@ -137,14 +154,20 @@ class SkillFileTemplate(ResourceTemplate):
         params: dict[str, Any],
     ) -> ResourceResult:
         """Server entry point - read file directly without creating ephemeral resource."""
-        # Call read() directly and convert to ResourceResult
-        result = await self.read(arguments=params)
-        # `read()` guesses this same type to decide text vs blob; forwarding it
-        # keeps the read's content type in step with what the resources path
-        # reports, instead of the template's octet-stream default (#5852).
+        file_path = params.get("path", "")
+        # Resolve once and reuse that MIME type below, so the content encoding
+        # (text vs blob) and the type reported on the wire are decided from the
+        # same resolved path.
+        full_path, mime_type = self._resolve_skill_file(file_path)
+        if self.skill_info.preserve_bytes:
+            result: str | bytes | ResourceResult = await run_sync(
+                read_file, self.skill_info.path, file_path
+            )
+        else:
+            result = self._read_file_contents(full_path, mime_type, file_path)
         return convert_raw_to_resource_result(
             result,
-            mime_type=self._guess_mime_type(params.get("path", "")),
+            mime_type=mime_type,
             meta=self.meta,
         )
 

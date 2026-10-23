@@ -484,6 +484,45 @@ This is my skill content.
             f"resources mode reports {observed['resources']!r}"
         )
 
+    @pytest.mark.parametrize(
+        ("alias_name", "target_name", "expected_mime", "expected_type"),
+        [
+            ("reference", "ref.md", "text/markdown", TextResourceContents),
+            ("payload", "blob.bin", "application/octet-stream", BlobResourceContents),
+        ],
+    )
+    async def test_template_read_types_supporting_file_by_its_resolved_target(
+        self,
+        typed_skill_dir: Path,
+        alias_name: str,
+        target_name: str,
+        expected_mime: str,
+        expected_type: type,
+    ):
+        """A symlinked supporting file is typed from the file it resolves to (#5852).
+
+        ``_read`` used to guess the type from the raw template parameter, which for
+        a suffix-less alias disagrees with the resolved file: the payload came back
+        as text while the wire advertised octet-stream (or vice versa).
+        """
+        (typed_skill_dir / alias_name).symlink_to(typed_skill_dir / target_name)
+
+        mcp = FastMCP("Test")
+        mcp.add_provider(SkillProvider(skill_path=typed_skill_dir))
+
+        async with Client(mcp) as client:
+            result = await client.read_resource(f"skill://typed-skill/{alias_name}")
+
+        contents = result[0]
+        assert isinstance(contents, expected_type), (
+            f"{alias_name} -> {target_name} should be served as "
+            f"{expected_type.__name__}, got {type(contents).__name__}"
+        )
+        assert contents.mime_type == expected_mime, (
+            f"{alias_name} -> {target_name} advertised {contents.mime_type!r}, "
+            f"expected the resolved file's type {expected_mime!r}"
+        )
+
     async def test_read_supporting_file_with_space_in_name(self, tmp_path: Path):
         """Percent-encoded resource URIs for supporting files must round-trip (#4545)."""
         skill_dir = tmp_path / "space-skill"

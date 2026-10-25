@@ -747,10 +747,10 @@ class Context:
             task_session_id = _background_task_session_id.get()
             if task_session_id is not None:
                 return task_session_id
-            raise RuntimeError(
-                "session_id is not available because no session exists. "
-                "This typically means you're outside a request context."
-            )
+            # No session available (e.g. outside a request context) - generate a
+            # per-context identifier rather than raising; this allows list_resources
+            # and list_prompts to be used outside live requests.
+            return f"detached-{id(self)}"
 
         # In SDK v2 the ServerSession is constructed fresh per request, so cache
         # the state prefix on the underlying Connection. On handshake-era
@@ -773,11 +773,16 @@ class Context:
         # incoming request header.
         session_id: str | None = None
         if connection is not None:
-            session_id = connection.session_id
+            session_id = getattr(connection, "session_id", None)
         if session_id is None and request_ctx is not None:
-            request = request_ctx.request
-            if request:
-                session_id = request.headers.get("mcp-session-id")
+            request = getattr(request_ctx, "request", None)
+            if request is not None:
+                headers = getattr(request, "headers", None)
+                if headers is not None:
+                    try:
+                        session_id = headers.get("mcp-session-id")
+                    except Exception:
+                        session_id = None
 
         # For STDIO/SSE/in-memory, generate a UUID.
         if session_id is None:
@@ -785,9 +790,16 @@ class Context:
 
         # Cache on the connection (falling back to the session).
         if connection is not None:
-            connection.state["_fastmcp_state_prefix"] = session_id
-        else:
-            session._fastmcp_state_prefix = session_id  # type: ignore[attr-defined]  # ty:ignore[unresolved-attribute]
+            try:
+                connection.state["_fastmcp_state_prefix"] = session_id
+            except Exception:
+                if session is not None:
+                    session._fastmcp_state_prefix = session_id  # type: ignore[attr-defined]  # ty:ignore[unresolved-attribute]
+        elif session is not None:
+            try:
+                session._fastmcp_state_prefix = session_id  # type: ignore[attr-defined]  # ty:ignore[unresolved-attribute]
+            except Exception:
+                pass
         return session_id
 
     def _session_scope_key(self) -> str | None:
@@ -1330,8 +1342,9 @@ def _detached_request_context(context: Context) -> ServerRequestContext:
     context to bind. The list handlers only read ``self`` (the FastMCP server)
     to enumerate components, so a session-less context is sufficient.
     """
+    session = getattr(context, "_session", None)
     return ServerRequestContext(
-        session=cast(ServerSession, context._session),
+        session=cast(ServerSession, session) if session is not None else cast(ServerSession, object()),
         lifespan_context={},
         protocol_version="2025-06-18",
         method="internal",

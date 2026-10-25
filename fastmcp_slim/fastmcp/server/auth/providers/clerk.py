@@ -82,7 +82,7 @@ class ClerkTokenVerifier(TokenVerifier):
                 lifecycle. When None (default), a fresh client is created per call.
         """
         super().__init__(required_scopes=required_scopes)
-        self.domain = domain.rstrip("/")
+        self.domain = domain.removeprefix("https://").removeprefix("http://").rstrip("/")
         self._client_id = client_id
         self._client_secret = client_secret
         self.timeout_seconds = timeout_seconds
@@ -351,7 +351,7 @@ class ClerkProvider(OAuthProxy):
             token_expiry_threshold_seconds: Number of seconds before actual expiry to
                 treat a token as expired, refreshing early to avoid races. Defaults to 0.
         """
-        domain = domain.rstrip("/")
+        domain = domain.removeprefix("https://").removeprefix("http://").rstrip("/")
 
         required_scopes_final = (
             parse_scopes(required_scopes)

@@ -152,6 +152,8 @@ class ClientPromptsMixin:
             if arguments:
                 serialized_arguments = {}
                 for key, value in arguments.items():
+                    if value is None:
+                        continue
                     if isinstance(value, str):
                         serialized_arguments[key] = value
                     else:
